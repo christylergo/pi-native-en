@@ -10,12 +10,18 @@
  * never takes focus and never covers the input bar — all interactions are
  * global shortcuts that work while typing:
  *
- *   Ctrl+1 / Ctrl+2 / Ctrl+3   inject Natural / Technical / Concise
+ *   Alt+1 / Alt+2 / Alt+3     inject Natural / Technical / Concise
  *   Alt+I                      inject the currently selected style
  *   Alt+H / Alt+L              select previous / next style (▍ marks it)
  *   Alt+C                      copy the selected style to the clipboard
  *   Alt+J / Alt+K              scroll the panel down / up
  *   Alt+W                      close the panel
+ *
+ * Focus model: the panel NEVER takes focus — the editor is always focused.
+ * Every panel action is a global shortcut, so there is no focus switching
+ * and typing is never interrupted (transcribe from the panel while typing).
+ * (Inject keys are Alt+digit, not Ctrl+digit: legacy terminals cannot encode
+ * Ctrl+1/2/3 — they would type plain digits.)
  *
  * Commands:
  *   /native <text>             manual translation trigger
@@ -260,22 +266,24 @@ export default async function main(pi: ExtensionAPI): Promise<void> {
 	});
 
 	// -- shortcuts (all interaction lives in the panel itself) -------------
-
-	pi.registerShortcut("ctrl+1", {
+	// Inject keys use Alt+digit, never Ctrl+digit: legacy terminal encodings
+	// cannot represent Ctrl+1/2/3 (they arrive as plain "1"/"2"/"3"), while
+	// ESC+digit is unambiguous in every terminal.
+	pi.registerShortcut("alt+1", {
 		description: "native-prompt: inject Natural translation",
 		handler: (ctx: ExtensionCommandContext) => {
 			panel.selectIndex(0);
 			inject(ctx, "natural");
 		},
 	});
-	pi.registerShortcut("ctrl+2", {
+	pi.registerShortcut("alt+2", {
 		description: "native-prompt: inject Technical translation",
 		handler: (ctx: ExtensionCommandContext) => {
 			panel.selectIndex(1);
 			inject(ctx, "technical");
 		},
 	});
-	pi.registerShortcut("ctrl+3", {
+	pi.registerShortcut("alt+3", {
 		description: "native-prompt: inject Concise translation",
 		handler: (ctx: ExtensionCommandContext) => {
 			panel.selectIndex(2);

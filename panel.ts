@@ -202,14 +202,15 @@ export class NativePanel {
 		this.offset = Math.min(Math.max(0, this.offset), max);
 	}
 
-	/** Content-adaptive inner width: as wide as the longest unwrapped line. */
+	/** Panel width: half the terminal by default, widening for long content. */
 	private computeInner(width: number): number {
 		// The box adds two border columns, so the inner width must fit width - 2.
 		const usable = Math.max(20, width - 2);
+		const half = Math.max(MIN_INNER, Math.floor(width / 2));
 		const st = this.state;
 		if (st?.phase !== "done") {
-			// Loading/streaming/error: a moderate fixed width.
-			return Math.min(72, Math.min(MIN_INNER, usable) === MIN_INNER ? MIN_INNER : usable);
+			// Loading/streaming/error: half the screen.
+			return Math.min(110, half, usable);
 		}
 		let longest = 0;
 		for (const key of STYLE_KEYS) {
@@ -218,8 +219,10 @@ export class NativePanel {
 			}
 		}
 		const source = Math.min(60, visibleWidth(st.source.replace(/\s+/g, " ").trim()));
-		longest = Math.max(longest, source + 4, 52); // never cramped
-		return Math.max(Math.min(MIN_INNER, usable), Math.min(MAX_INNER, longest + 4, usable));
+		longest = Math.max(longest, source + 4);
+		// Half a screen minimum (the user's preferred default), wider only when
+		// the content needs it, capped at 110 columns.
+		return Math.max(Math.min(half, usable), Math.min(MAX_INNER, longest + 4, usable));
 	}
 
 	private rebuildDone(wrapAt: number): void {
@@ -303,7 +306,7 @@ export class NativePanel {
 			const scrollable = total > CONTENT_HEIGHT;
 			const pos = scrollable ? ` · ${Math.min(100, Math.round((this.offset / Math.max(1, total - CONTENT_HEIGHT)) * 100))}%` : "";
 			const sel = STYLE_LABELS[STYLE_KEYS[this.selected]!];
-			const footer = `▸${sel}  Alt+I/Ctrl+1-3 inject · Alt+H/L select · Alt+C copy${scrollable ? " · Alt+J/K scroll" : ""} · Alt+W close${pos}`;
+			const footer = `▸${sel}  Alt+1/2/3 or Alt+I inject · Alt+H/L select · Alt+C copy${scrollable ? " · Alt+J/K scroll" : ""} · Alt+W close${pos}`;
 			lines.push("");
 			lines.push(` ${th ? th.fg("dim", truncateToWidth(footer, inner - 2)) : truncateToWidth(footer, inner - 2)}`);
 		}

@@ -18,7 +18,7 @@ i am want to check why audio not switch native
 
 | Key | Action |
 | --- | --- |
-| `Ctrl+1` / `Ctrl+2` / `Ctrl+3` | inject Natural / Technical / Concise into the editor |
+| `Alt+1` / `Alt+2` / `Alt+3` | inject Natural / Technical / Concise into the editor |
 | `Alt+I` | inject the currently selected style (`▍` marks it) |
 | `Alt+H` / `Alt+L` | select previous / next style |
 | `Alt+C` | copy the selected style to the clipboard |
@@ -26,11 +26,18 @@ i am want to check why audio not switch native
 | `Alt+W` | close the panel |
 | `Alt+N` | interactive modal: `↑↓` scroll, `Tab` select, `1/2/3`/`Enter` inject, `c` copy, `Esc` back to the editor |
 
-On trigger a centered, content-adaptive panel appears immediately above the
-editor (never covering the input bar) and the translation streams into it
-live — including the model's reasoning chain while it thinks, so the panel
-never looks stuck. It never takes focus; every interaction is a global shortcut that
-works while typing. Submitting any input dismisses it.
+On trigger a centered panel (half the terminal wide by default, wider only
+when the content needs it) appears immediately above the editor — never
+covering the input bar — and the translation streams into it live, including
+the model's reasoning chain, so it never looks stuck.
+
+Focus model: the panel never takes focus; the editor is always focused. Every
+panel action is a global shortcut that works while typing, which is what makes
+transcribing from the panel frictionless. There is no focus switching because
+none is needed. Submitting any input dismisses the panel.
+
+Inject keys are Alt+digit, not Ctrl+digit: legacy terminal encodings cannot
+represent Ctrl+1/2/3 (they arrive as plain digits and never fire).
 
 Commands: `/native <text>` (manual trigger) · `/native model` (pick model) ·
 `/native clear` (wipe translation memory).
