@@ -99,9 +99,12 @@ export class NativeSidePanel {
 		return this.state?.phase === "done" && this.totalLines() > CONTENT_HEIGHT;
 	}
 
-	attach(tui: TuiLike, theme: ThemeLike): void {
+	attach(tui: TuiLike, theme: ThemeLike | null): void {
 		this.tui = tui;
-		this.theme = theme;
+		// Different pi factories hand out different theme shapes: widgets and
+	// overlays get a full theme with fg(), the editor factory gets an editor
+	// theme without it. Normalize once here so rendering can never crash.
+		this.theme = theme && typeof (theme as { fg?: unknown }).fg === "function" ? theme : null;
 	}
 
 	private requestRender(): void {
@@ -233,9 +236,12 @@ export class PanelEditor extends CustomEditor {
 		theme: ThemeLike & object,
 		keybindings: object,
 		private panel: NativeSidePanel,
+		panelTheme?: ThemeLike | null,
 	) {
 		super(tui as never, theme as never, keybindings as never);
-		this.panel.attach(tui, theme);
+		// The editor factory's theme has no fg(); the full theme comes from
+		// ctx.ui.theme on the extension context instead.
+		this.panel.attach(tui, panelTheme ?? null);
 	}
 
 	render(width: number): string[] {
@@ -286,6 +292,8 @@ export class NativeOverlay {
 		private modelLabel: string,
 		private done: (choice: OverlayChoice | undefined) => void,
 	) {
+		// Same defensive normalization as NativeSidePanel.attach.
+		this.theme = theme && typeof (theme as { fg?: unknown }).fg === "function" ? theme : null;
 		this.rebuild(58);
 	}
 

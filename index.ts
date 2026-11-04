@@ -300,8 +300,11 @@ export default async function main(pi: ExtensionAPI): Promise<void> {
 	pi.on("session_start", (_event, ctx) => {
 		if (!ctx.hasUI) return;
 		try {
+			// ctx.ui.theme carries the full theme (with fg()); the editor
+		// factory's own theme parameter does not.
+			const fullTheme = (ctx.ui as unknown as { theme?: { fg?: unknown } }).theme as never;
 			ctx.ui.setEditorComponent((tui, theme, keybindings) =>
-				new PanelEditor(tui, theme, keybindings, panel) as never,
+				new PanelEditor(tui, theme, keybindings, panel, fullTheme) as never,
 			);
 		} catch {
 			// Older pi without setEditorComponent: fall back to footer status.
