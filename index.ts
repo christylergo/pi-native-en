@@ -5,15 +5,17 @@
  * The input is intercepted, never sent to the working session, and translated
  * by an independent LLM call whose history lives in its own state directory.
  *
- * On trigger the panel appears IMMEDIATELY beside the editor (the editor
- * re-renders narrower and wraps its text); the translation then streams into
- * the panel live. The panel never takes focus — transcribe from it while it
- * is open, scroll with Alt+J/Alt+K, dismiss by submitting any input.
+ * On trigger the panel appears immediately above the editor (centered,
+ * content-adaptive width) and the translation streams into it live. The panel
+ * never takes focus and never covers the input bar — all interactions are
+ * global shortcuts that work while typing:
  *
- * Keyboard (chosen to avoid pi defaults):
- *   Ctrl+1 / Ctrl+2 / Ctrl+3   inject Natural / Technical / Concise into the editor
- *   Alt+N                      interactive modal (select/copy/inject; Esc returns focus to the editor)
- *   Alt+J / Alt+K              scroll the panel down / up (works while typing)
+ *   Ctrl+1 / Ctrl+2 / Ctrl+3   inject Natural / Technical / Concise
+ *   Alt+I                      inject the currently selected style
+ *   Alt+H / Alt+L              select previous / next style (▍ marks it)
+ *   Alt+C                      copy the selected style to the clipboard
+ *   Alt+J / Alt+K              scroll the panel down / up
+ *   Alt+W                      close the panel
  *
  * Commands:
  *   /native <text>             manual translation trigger
@@ -34,7 +36,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { NativeOverlay, NativeSidePanel, PanelEditor } from "./panel.ts";
+import { copyToClipboard, NativePanel } from "./panel.ts";
 import {
 	clearHistory,
 	describeModel,
@@ -48,6 +50,7 @@ import {
 	type TranslationResult,
 } from "./translator.ts";
 
+const WIDGET_ID = "native-prompt";
 const TRIGGER = /[ \t]*native[ \t]*$/i;
 
 function extensionDir(): string {
@@ -84,8 +87,7 @@ export default async function main(pi: ExtensionAPI): Promise<void> {
 
 	let inFlight: AbortController | null = null;
 	let last: { source: string; result: TranslationResult; modelLabel: string } | null = null;
-	let panelOpen = false;
-	const panel = new NativeSidePanel();
+	const panel = new NativePanel();
 
 	// -- helpers -------------------------------------------------------------
 
@@ -97,9 +99,27 @@ export default async function main(pi: ExtensionAPI): Promise<void> {
 		}
 	}
 
-	function dismissPanel(): void {
-		// The editor re-renders full width on its own once the panel clears.
+	function mountWidget(ctx: ExtensionContext): void {
+		try {
+			if (!ctx.hasUI) return;
+			// The widget slot sits above the editor: the input bar is never
+			// covered, and the factory theme is the full theme (with fg()).
+			ctx.ui.setWidget(WIDGET_ID, (tui, theme) => {
+				panel.bind(tui as { requestRender(): void }, theme);
+				return panel as never;
+			});
+		} catch {
+			// Stale ctx: session_start re-registers the widget.
+		}
+	}
+
+	function unmountWidget(ctx: ExtensionContext): void {
 		panel.clear();
+		try {
+			if (ctx.hasUI) ctx.ui.setWidget(WIDGET_ID, undefined);
+		} catch {
+			// stale ctx
+		}
 	}
 
 	function inject(ctx: ExtensionContext, style: StyleKey, text?: string): void {
@@ -109,38 +129,8 @@ export default async function main(pi: ExtensionAPI): Promise<void> {
 		}
 		recordChoice(style);
 		ctx.ui.setEditorText(text ?? last.result[style] ?? "");
-		dismissPanel();
+		unmountWidget(ctx);
 		ctx.ui.notify(`native-prompt: injected ${STYLE_LABELS[style]}`, "info");
-	}
-
-	async function openPanel(ctx: ExtensionContext): Promise<void> {
-		if (!last) {
-			ctx.ui.notify("native-prompt: no translation yet — send a prompt ending with 'native' first", "warning");
-			return;
-		}
-		if (panelOpen) return;
-		panelOpen = true;
-		try {
-			const snapshot = last;
-			const choice = await ctx.ui.custom(
-				(_tui, theme, _keybindings, done) =>
-					new NativeOverlay(
-						theme as unknown as { fg: (t: string, s: string) => string },
-						snapshot.source,
-						snapshot.result,
-						snapshot.modelLabel,
-						done,
-					) as never,
-				{ overlay: true } as never,
-			);
-			// The panel is closed here (inject, copy-then-close, or Esc);
-			// pi has already returned focus to the editor.
-			if (choice) inject(ctx, choice.style, choice.text);
-		} catch {
-			// Stale ctx (session switch while the panel was open): drop quietly.
-		} finally {
-			panelOpen = false;
-		}
 	}
 
 	// -- translation flow ---------------------------------------------------
@@ -155,8 +145,9 @@ export default async function main(pi: ExtensionAPI): Promise<void> {
 		inFlight = abort;
 		last = null;
 		if (ctx.hasUI) {
-			// Show the panel immediately at trigger time — the model's progress
-			// streams into it. The editor re-renders narrower (wrapping) at once.
+			// The panel appears immediately at trigger time; the model's
+			// progress streams into it.
+			mountWidget(ctx);
 			panel.showLoading(source, describeModel(config));
 		} else {
 			setStatus(ctx, `Translating · ${describeModel(config)}…`);
@@ -169,7 +160,6 @@ export default async function main(pi: ExtensionAPI): Promise<void> {
 			last = { source, result: out.result, modelLabel: out.modelLabel };
 			setStatus(ctx, undefined);
 			if (ctx.hasUI) {
-				// Swap the streaming view for the final three-style layout.
 				panel.showDone(source, out.result, out.modelLabel);
 			} else if (ctx.mode === "print") {
 				// Headless (/native in print mode): the only output channel.
@@ -183,7 +173,7 @@ export default async function main(pi: ExtensionAPI): Promise<void> {
 			if (inFlight !== abort) return;
 			setStatus(ctx, undefined);
 			if (abort.signal.aborted) {
-				dismissPanel();
+				unmountWidget(ctx);
 				return;
 			}
 			const message = err instanceof Error ? err.message : String(err);
@@ -243,7 +233,7 @@ export default async function main(pi: ExtensionAPI): Promise<void> {
 
 		// Any submitted input dismisses the panel: the user quick-injected
 		// earlier or finished transcribing their own version by hand.
-		if (panel.active) dismissPanel();
+		if (panel.active) unmountWidget(ctx);
 	});
 
 	pi.registerCommand("native", {
@@ -269,21 +259,57 @@ export default async function main(pi: ExtensionAPI): Promise<void> {
 		},
 	});
 
+	// -- shortcuts (all interaction lives in the panel itself) -------------
+
 	pi.registerShortcut("ctrl+1", {
 		description: "native-prompt: inject Natural translation",
-		handler: (ctx: ExtensionCommandContext) => inject(ctx, "natural"),
+		handler: (ctx: ExtensionCommandContext) => {
+			panel.selectIndex(0);
+			inject(ctx, "natural");
+		},
 	});
 	pi.registerShortcut("ctrl+2", {
 		description: "native-prompt: inject Technical translation",
-		handler: (ctx: ExtensionCommandContext) => inject(ctx, "technical"),
+		handler: (ctx: ExtensionCommandContext) => {
+			panel.selectIndex(1);
+			inject(ctx, "technical");
+		},
 	});
 	pi.registerShortcut("ctrl+3", {
 		description: "native-prompt: inject Concise translation",
-		handler: (ctx: ExtensionCommandContext) => inject(ctx, "concise"),
+		handler: (ctx: ExtensionCommandContext) => {
+			panel.selectIndex(2);
+			inject(ctx, "concise");
+		},
 	});
-	pi.registerShortcut("alt+n", {
-		description: "native-prompt: interactive translation panel",
-		handler: (ctx: ExtensionCommandContext) => void openPanel(ctx),
+	pi.registerShortcut("alt+i", {
+		description: "native-prompt: inject the selected translation",
+		handler: (ctx: ExtensionCommandContext) => {
+			const style = panel.selectedStyle;
+			if (style) inject(ctx, style);
+			else ctx.ui.notify("native-prompt: no translation yet", "warning");
+		},
+	});
+	pi.registerShortcut("alt+h", {
+		description: "native-prompt: select previous translation style",
+		handler: () => panel.selectBy(-1),
+	});
+	pi.registerShortcut("alt+l", {
+		description: "native-prompt: select next translation style",
+		handler: () => panel.selectBy(1),
+	});
+	pi.registerShortcut("alt+c", {
+		description: "native-prompt: copy the selected translation",
+		handler: (ctx: ExtensionCommandContext) => {
+			const text = panel.selectedText;
+			if (!text) {
+				ctx.ui.notify("native-prompt: nothing selected", "warning");
+				return;
+			}
+			void copyToClipboard(text).then((ok) =>
+				ctx.ui.notify(ok ? "native-prompt: copied to clipboard" : "native-prompt: no clipboard helper (wl-copy/xclip)", ok ? "info" : "warning"),
+			);
+		},
 	});
 	pi.registerShortcut("alt+j", {
 		description: "native-prompt: scroll translation panel down",
@@ -293,21 +319,16 @@ export default async function main(pi: ExtensionAPI): Promise<void> {
 		description: "native-prompt: scroll translation panel up",
 		handler: () => panel.scrollBy(-1),
 	});
+	pi.registerShortcut("alt+w", {
+		description: "native-prompt: close translation panel",
+		handler: (ctx: ExtensionCommandContext) => {
+			if (panel.active) unmountWidget(ctx);
+		},
+	});
 
-	// Wrap the editor once per session: the wrapper is a pure pass-through
-	// while the panel is inactive, and renders the side panel + a narrower,
-	// wrapping editor while it is active.
+	// After a session switch the widget binding is gone; restore it if the
+	// panel still has content.
 	pi.on("session_start", (_event, ctx) => {
-		if (!ctx.hasUI) return;
-		try {
-			// ctx.ui.theme carries the full theme (with fg()); the editor
-		// factory's own theme parameter does not.
-			const fullTheme = (ctx.ui as unknown as { theme?: { fg?: unknown } }).theme as never;
-			ctx.ui.setEditorComponent((tui, theme, keybindings) =>
-				new PanelEditor(tui, theme, keybindings, panel, fullTheme) as never,
-			);
-		} catch {
-			// Older pi without setEditorComponent: fall back to footer status.
-		}
+		if (ctx.hasUI && (panel.active || last)) mountWidget(ctx);
 	});
 }

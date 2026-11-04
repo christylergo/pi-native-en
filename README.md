@@ -19,14 +19,17 @@ i am want to check why audio not switch native
 | Key | Action |
 | --- | --- |
 | `Ctrl+1` / `Ctrl+2` / `Ctrl+3` | inject Natural / Technical / Concise into the editor |
-| `Alt+J` / `Alt+K` | scroll the panel down / up (works while typing in the editor) |
-| `Alt+N` | interactive modal: `↑↓` scroll, `Tab` select, `1/2/3`/`Enter` inject, `c` copy, `Esc` back to the editor |
+| `Alt+I` | inject the currently selected style (`▍` marks it) |
+| `Alt+H` / `Alt+L` | select previous / next style |
+| `Alt+C` | copy the selected style to the clipboard |
+| `Alt+J` / `Alt+K` | scroll the panel down / up |
+| `Alt+W` | close the panel |
 | `Alt+N` | interactive modal: `↑↓` scroll, `Tab` select, `1/2/3`/`Enter` inject, `c` copy, `Esc` back to the editor |
 
-On trigger the panel appears immediately beside the editor — the editor
-re-renders narrower (its text wraps) and the translation streams into the
-panel live. It never steals focus, so you can transcribe from it while typing.
-Submitting any input dismisses it and the editor returns to full width.
+On trigger a centered, content-adaptive panel appears immediately above the
+editor (never covering the input bar) and the translation streams into it
+live. It never takes focus — every interaction is a global shortcut that
+works while typing. Submitting any input dismisses it.
 
 Commands: `/native <text>` (manual trigger) · `/native model` (pick model) ·
 `/native clear` (wipe translation memory).
