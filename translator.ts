@@ -288,12 +288,13 @@ export async function translate(
 	config: PluginConfig,
 	source: string,
 	signal?: AbortSignal,
+	onUpdate?: (partial: string) => void,
 ): Promise<{ result: TranslationResult; modelLabel: string }> {
 	const model = resolveModel(ctx, config);
 	const modelLabel = `${(model.provider as string | undefined) ?? "custom"}/${model.id}`;
 	let messages = buildMessages(config, source);
 
-	const call = async (msgs: ChatMessage[]): Promise<string> => {
+	const complete = async (msgs: ChatMessage[]): Promise<string> => {
 		const response = await ctx.modelRegistry.complete(
 			model as never,
 			{ messages: msgs } as never,
@@ -307,7 +308,40 @@ export async function translate(
 		return extractText(response);
 	};
 
-	let text = await call(messages);
+	// First attempt streams, so the panel can show the translation as it is
+	// produced. Falls back to complete() when streaming is unavailable.
+	const streamOnce = async (msgs: ChatMessage[]): Promise<string> => {
+		const registry = ctx.modelRegistry as unknown as {
+			streamSimple?: (m: unknown, context: unknown, options: unknown) => AsyncIterable<unknown> & { result(): Promise<unknown> };
+		};
+		if (typeof registry.streamSimple !== "function" || !onUpdate) return complete(msgs);
+		let partial = "";
+		try {
+			const stream = registry.streamSimple(model, { messages: msgs }, { maxTokens: 4096, signal });
+			for await (const ev of stream) {
+				const e = ev as { type?: string; text?: string; message?: unknown };
+				if (typeof e.text === "string" && (e.type === "text_delta" || e.type === "text" || e.type?.endsWith("_delta"))) {
+					partial += e.text;
+				onUpdate(partial);
+			} else if (e.type === "message_update" && e.message) {
+				const t = extractText(e.message);
+				if (t) {
+					partial = t;
+					onUpdate(partial);
+				}
+				}
+			}
+			const finalMessage = await stream.result();
+			const text = extractText(finalMessage);
+			return text || partial;
+		} catch (err) {
+			if (signal?.aborted) throw err;
+			// Streaming failed mid-flight: fall back to a plain complete() call.
+			return complete(msgs);
+		}
+	};
+
+	let text = await streamOnce(messages);
 	let result = parseTranslation(text);
 
 	if (!isComplete(result)) {
@@ -321,7 +355,7 @@ export async function translate(
 					`Your previous answer did not follow the format. Respond again with ONLY one JSON object with exactly the keys natural, technical, concise. All three values must be filled, each a complete standalone rewrite of the last TEXT.`,
 			},
 		];
-		text = await call(messages);
+		text = await complete(messages);
 		result = parseTranslation(text);
 	}
 	if (!isComplete(result)) {

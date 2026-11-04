@@ -5,10 +5,10 @@
  * The input is intercepted, never sent to the working session, and translated
  * by an independent LLM call whose history lives in its own state directory.
  *
- * When the translation completes, a right-aligned panel with the FULL
- * three-style result appears above the editor. It never takes focus — the
- * user can transcribe from it into the editor while it stays open, scrolling
- * with Alt+J/Alt+K. Submitting any input dismisses it.
+ * On trigger the panel appears IMMEDIATELY beside the editor (the editor
+ * re-renders narrower and wraps its text); the translation then streams into
+ * the panel live. The panel never takes focus — transcribe from it while it
+ * is open, scroll with Alt+J/Alt+K, dismiss by submitting any input.
  *
  * Keyboard (chosen to avoid pi defaults):
  *   Ctrl+1 / Ctrl+2 / Ctrl+3   inject Natural / Technical / Concise into the editor
@@ -34,7 +34,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { NativeOverlay, NativePanel } from "./panel.ts";
+import { NativeOverlay, NativeSidePanel, PanelEditor } from "./panel.ts";
 import {
 	clearHistory,
 	describeModel,
@@ -85,7 +85,7 @@ export default async function main(pi: ExtensionAPI): Promise<void> {
 	let inFlight: AbortController | null = null;
 	let last: { source: string; result: TranslationResult; modelLabel: string } | null = null;
 	let panelOpen = false;
-	const panel = new NativePanel();
+	const panel = new NativeSidePanel();
 
 	// -- helpers -------------------------------------------------------------
 
@@ -97,26 +97,9 @@ export default async function main(pi: ExtensionAPI): Promise<void> {
 		}
 	}
 
-	function showPanel(ctx: ExtensionContext): void {
-		if (!ctx.hasUI || !last) return;
-		try {
-			ctx.ui.setWidget("native-prompt", (tui, theme) => {
-				panel.bind(tui as { requestRender(): void }, theme as unknown as { fg: (t: string, s: string) => string });
-				return panel as never;
-			});
-			panel.set(last.source, last.result, last.modelLabel);
-		} catch {
-			// Stale ctx: the session_start handler re-registers the widget.
-		}
-	}
-
-	function hidePanel(ctx: ExtensionContext): void {
+	function dismissPanel(): void {
+		// The editor re-renders full width on its own once the panel clears.
 		panel.clear();
-		try {
-			if (ctx.hasUI) ctx.ui.setWidget("native-prompt", undefined);
-		} catch {
-			// stale ctx
-		}
 	}
 
 	function inject(ctx: ExtensionContext, style: StyleKey, text?: string): void {
@@ -126,7 +109,7 @@ export default async function main(pi: ExtensionAPI): Promise<void> {
 		}
 		recordChoice(style);
 		ctx.ui.setEditorText(text ?? last.result[style] ?? "");
-		hidePanel(ctx);
+		dismissPanel();
 		ctx.ui.notify(`native-prompt: injected ${STYLE_LABELS[style]}`, "info");
 	}
 
@@ -171,16 +154,23 @@ export default async function main(pi: ExtensionAPI): Promise<void> {
 		const abort = new AbortController();
 		inFlight = abort;
 		last = null;
-		setStatus(ctx, `Translating · ${describeModel(config)}…`);
+		if (ctx.hasUI) {
+			// Show the panel immediately at trigger time — the model's progress
+			// streams into it. The editor re-renders narrower (wrapping) at once.
+			panel.showLoading(source, describeModel(config));
+		} else {
+			setStatus(ctx, `Translating · ${describeModel(config)}…`);
+		}
 		try {
-			const out = await translate(ctx, config, source, abort.signal);
+			const out = await translate(ctx, config, source, abort.signal, (partial) => {
+				panel.showStreaming(source, describeModel(config), partial);
+			});
 			if (inFlight !== abort) return; // superseded by a newer trigger
 			last = { source, result: out.result, modelLabel: out.modelLabel };
 			setStatus(ctx, undefined);
 			if (ctx.hasUI) {
-				// Show the full-content panel passively — the editor keeps focus so
-				// the user can transcribe straight from the panel while it is open.
-				showPanel(ctx);
+				// Swap the streaming view for the final three-style layout.
+				panel.showDone(source, out.result, out.modelLabel);
 			} else if (ctx.mode === "print") {
 				// Headless (/native in print mode): the only output channel.
 				// Never print in json/rpc modes — stdout is a protocol stream there.
@@ -192,10 +182,14 @@ export default async function main(pi: ExtensionAPI): Promise<void> {
 		} catch (err) {
 			if (inFlight !== abort) return;
 			setStatus(ctx, undefined);
-			if (abort.signal.aborted) return;
+			if (abort.signal.aborted) {
+				dismissPanel();
+				return;
+			}
 			const message = err instanceof Error ? err.message : String(err);
 			try {
-				ctx.ui.notify(message, "error");
+				if (ctx.hasUI) panel.showError(message);
+				else ctx.ui.notify(message, "error");
 			} catch {
 				// stale ctx
 			}
@@ -249,7 +243,7 @@ export default async function main(pi: ExtensionAPI): Promise<void> {
 
 		// Any submitted input dismisses the panel: the user quick-injected
 		// earlier or finished transcribing their own version by hand.
-		if (panel.hasContent) hidePanel(ctx);
+		if (panel.active) dismissPanel();
 	});
 
 	pi.registerCommand("native", {
@@ -300,9 +294,17 @@ export default async function main(pi: ExtensionAPI): Promise<void> {
 		handler: () => panel.scrollBy(-1),
 	});
 
-	// After a session switch the widget binding is gone; restore it if the
-	// panel still has content.
+	// Wrap the editor once per session: the wrapper is a pure pass-through
+	// while the panel is inactive, and renders the side panel + a narrower,
+	// wrapping editor while it is active.
 	pi.on("session_start", (_event, ctx) => {
-		if (ctx.hasUI && last) showPanel(ctx);
+		if (!ctx.hasUI) return;
+		try {
+			ctx.ui.setEditorComponent((tui, theme, keybindings) =>
+				new PanelEditor(tui, theme, keybindings, panel) as never,
+			);
+		} catch {
+			// Older pi without setEditorComponent: fall back to footer status.
+		}
 	});
 }

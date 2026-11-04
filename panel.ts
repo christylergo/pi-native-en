@@ -1,15 +1,17 @@
 /**
  * UI components for the native-prompt extension.
  *
- * - NativePanel: the always-visible, right-aligned panel above the editor.
- *   Shows the FULL three-style translation, scrolls internally, and never
- *   takes focus — so the user can transcribe from it into the editor while
- *   it is open. Scrolling is driven by global shortcuts (Alt+J/Alt+K).
+ * - NativeSidePanel: stateful panel content (loading / streaming / done /
+ *   error) rendered inside the editor component's right side. It never takes
+ *   focus; scrolling is driven by global shortcuts.
+ * - PanelEditor: wraps pi's real editor (CustomEditor). When the panel is
+ *   active it renders the editor narrower (its text wraps) and draws the
+ *   panel beside it; when inactive it is a pure pass-through.
  * - NativeOverlay: the interactive modal (Alt+N) for selection/copy/inject.
- *   Closing it returns focus to the editor automatically.
  */
 import { spawn } from "node:child_process";
 import { matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { CustomEditor } from "@earendil-works/pi-coding-agent";
 import { STYLE_KEYS, STYLE_LABELS, type StyleKey, type TranslationResult } from "./translator.ts";
 
 // ---------------------------------------------------------------------------
@@ -20,29 +22,23 @@ interface ThemeLike {
 	fg: (token: string, text: string) => string;
 }
 
+interface TuiLike {
+	requestRender(): void;
+}
+
 function padTo(s: string, len: number): string {
 	const v = visibleWidth(s);
 	return s + " ".repeat(Math.max(0, len - v));
 }
 
-function padLeft(line: string, leftPad: number): string {
-	return " ".repeat(leftPad) + line;
-}
-
-function boxWidthFor(width: number, max: number): number {
-	return Math.max(30, Math.min(max, width));
-}
-
 function drawBox(theme: ThemeLike | null, innerLines: string[], inner: number, title: string): string[] {
 	const c = theme ? theme.fg("border", "│") : "│";
-	// A title longer than the box would push the top border out of alignment.
 	const shown = truncateToWidth(title, Math.max(4, inner - 4));
 	const dashes = Math.max(0, inner - shown.length - 3);
 	const top = theme
 		? theme.fg("border", `╭─ ${shown} `) + theme.fg("border", "─".repeat(dashes)) + theme.fg("border", "╮")
 		: `╭─ ${shown} ${"─".repeat(dashes)}╮`;
 	const bottom = theme ? theme.fg("border", `╰${"─".repeat(inner)}╯`) : `╰${"─".repeat(inner)}╯`;
-	// Defensive: never let a long inner line push the box wider than its frame.
 	const rows = innerLines.map((l) => (visibleWidth(l) > inner ? truncateToWidth(l, inner) : l));
 	return [top, ...rows.map((l) => c + padTo(l, inner) + c), bottom];
 }
@@ -76,112 +72,192 @@ export async function copyToClipboard(text: string): Promise<boolean> {
 }
 
 // ---------------------------------------------------------------------------
-// Panel: full-content, right-aligned, passively visible above the editor
+// Side panel: content states rendered in the editor's right side
 // ---------------------------------------------------------------------------
 
-export class NativePanel {
-	private sourceText = "";
-	private result: TranslationResult | null = null;
-	private modelLabel = "";
-	private offset = 0;
+const CONTENT_HEIGHT = 18;
+
+type PanelState =
+	| { phase: "loading"; source: string; modelLabel: string }
+	| { phase: "streaming"; source: string; modelLabel: string; partial: string }
+	| { phase: "done"; source: string; result: TranslationResult; modelLabel: string }
+	| { phase: "error"; message: string };
+
+export class NativeSidePanel {
+	private state: PanelState | null = null;
+	private offset = 0; // manual scroll offset for the "done" phase
+	private tui: TuiLike | null = null;
+	private theme: ThemeLike | null = null;
 	private sections: string[][] = [];
 	private wrapWidth = 0;
-	private tui: { requestRender(): void } | null = null;
-	private theme: ThemeLike | null = null;
 
-	get hasContent(): boolean {
-		return this.result !== null;
+	get active(): boolean {
+		return this.state !== null;
 	}
 
-	bind(tui: { requestRender(): void }, theme: ThemeLike): void {
+	get scrollable(): boolean {
+		return this.state?.phase === "done" && this.totalLines() > CONTENT_HEIGHT;
+	}
+
+	attach(tui: TuiLike, theme: ThemeLike): void {
 		this.tui = tui;
 		this.theme = theme;
 	}
 
-	set(source: string, result: TranslationResult, modelLabel: string): void {
-		this.sourceText = source;
-		this.result = result;
-		this.modelLabel = modelLabel;
+	private requestRender(): void {
+		this.tui?.requestRender();
+	}
+
+	showLoading(source: string, modelLabel: string): void {
+		this.state = { phase: "loading", source, modelLabel };
 		this.offset = 0;
-		this.wrapWidth = 0; // force re-wrap
-		this.refresh();
+		this.wrapWidth = 0;
+		this.requestRender();
+	}
+
+	showStreaming(source: string, modelLabel: string, partial: string): void {
+		if (this.state?.phase === "done" || this.state?.phase === "error") return; // finished already
+		this.state = { phase: "streaming", source, modelLabel, partial };
+		this.requestRender();
+	}
+
+	showDone(source: string, result: TranslationResult, modelLabel: string): void {
+		this.state = { phase: "done", source, result, modelLabel };
+		this.offset = 0;
+		this.wrapWidth = 0;
+		this.requestRender();
+	}
+
+	showError(message: string): void {
+		this.state = { phase: "error", message };
+		this.requestRender();
 	}
 
 	clear(): void {
-		this.result = null;
-		this.tui?.requestRender();
+		if (!this.state) return;
+		this.state = null;
+		this.requestRender();
 	}
 
-	/** Scroll by delta lines (global shortcuts call this; editor keeps focus). */
+	/** Scroll by delta lines (global shortcuts; works while typing). */
 	scrollBy(delta: number): void {
-		if (!this.result) return;
-		const max = Math.max(0, this.totalLines() - PANEL_VIEWPORT_HEIGHT);
+		if (this.state?.phase !== "done") return;
+		const max = Math.max(0, this.totalLines() - CONTENT_HEIGHT);
 		this.offset = Math.min(Math.max(0, this.offset + delta), max);
-		this.tui?.requestRender();
+		this.requestRender();
 	}
 
 	private totalLines(): number {
 		return this.sections.reduce((n, s) => n + s.length, 0);
 	}
 
-	private rebuild(wrapAt: number): void {
+	private rebuildDone(wrapAt: number): void {
 		this.wrapWidth = wrapAt;
 		const th = this.theme;
-		const r = this.result;
-		if (!r) {
-			this.sections = [];
-			return;
-		}
+		const st = this.state as Extract<PanelState, { phase: "done" }>;
 		this.sections = STYLE_KEYS.map((key) => {
 			const header = th ? th.fg("accent", STYLE_LABELS[key]) : STYLE_LABELS[key];
-			return [header, ...wrapTextWithAnsi(r[key] ?? "", wrapAt), ""];
+			return [header, ...wrapTextWithAnsi(st.result[key] ?? "", wrapAt), ""];
 		});
-		const max = Math.max(0, this.totalLines() - PANEL_VIEWPORT_HEIGHT);
+		const max = Math.max(0, this.totalLines() - CONTENT_HEIGHT);
 		this.offset = Math.min(this.offset, max);
-	}
-
-	private refresh(): void {
-		this.wrapWidth = 0;
-		this.tui?.requestRender();
 	}
 
 	invalidate(): void {}
 
+	/** Render the panel box; the caller places it (right side of the editor). */
 	render(width: number): string[] {
-		if (!this.result) return [];
+		if (!this.state) return [];
 		const th = this.theme;
-		const boxW = boxWidthFor(width, 78);
-		const inner = boxW - 2;
-		const wrapAt = Math.max(20, inner - 2);
-		if (wrapAt !== this.wrapWidth) this.rebuild(wrapAt);
-
+		const inner = Math.max(20, width - 2);
+		const wrapAt = inner - 2;
 		const lines: string[] = [];
-		const src = this.sourceText.replace(/\s+/g, " ").trim();
-		lines.push(` ${th ? th.fg("dim", `◧ ${truncateToWidth(src, inner - 6)}`) : truncateToWidth(src, inner - 2)}`);
-		lines.push("");
+		let title = "Native";
 
-		let cursor = 0;
-		for (const section of this.sections) {
-			for (const line of section) {
-				if (cursor >= this.offset && cursor < this.offset + PANEL_VIEWPORT_HEIGHT) {
-					lines.push(` ${line}`);
+		const st = this.state;
+		if (st.phase === "loading") {
+			title = `Native · ${st.modelLabel}`;
+			lines.push(` ${th ? th.fg("accent", "⠋ Contacting model…") : "Contacting model…"}`);
+			lines.push("");
+			lines.push(` ${th ? th.fg("dim", `◧ ${truncateToWidth(st.source.replace(/\s+/g, " ").trim(), inner - 6)}`) : truncateToWidth(st.source, inner - 2)}`);
+			lines.push("");
+			lines.push(` ${th ? th.fg("dim", "The translation will stream in here.") : ""}`);
+		} else if (st.phase === "streaming") {
+			title = `Native · translating… ${st.partial.length}c`;
+			// Show the tail of the stream, auto-following.
+			const wrapped = wrapTextWithAnsi(st.partial || "…", wrapAt);
+			const tail = wrapped.slice(-CONTENT_HEIGHT);
+			for (const l of tail) lines.push(` ${l}`);
+			lines.push("");
+			lines.push(` ${th ? th.fg("dim", "streaming — a new trigger cancels") : ""}`);
+		} else if (st.phase === "done") {
+			title = `Native · ${st.modelLabel}`;
+			if (wrapAt !== this.wrapWidth || this.sections.length === 0) this.rebuildDone(wrapAt);
+			lines.push(` ${th ? th.fg("dim", `◧ ${truncateToWidth(st.source.replace(/\s+/g, " ").trim(), inner - 6)}`) : truncateToWidth(st.source, inner - 2)}`);
+			lines.push("");
+			let cursor = 0;
+			for (const section of this.sections) {
+				for (const line of section) {
+					if (cursor >= this.offset && cursor < this.offset + CONTENT_HEIGHT) lines.push(` ${line}`);
+					cursor++;
 				}
-				cursor++;
 			}
+		} else {
+			title = "Native ✗";
+			lines.push(` ${th ? th.fg("error", truncateToWidth(st.message, inner - 2)) : truncateToWidth(st.message, inner - 2)}`);
+			lines.push("");
+			lines.push(` ${th ? th.fg("dim", "retry by appending 'native' again") : ""}`);
 		}
 
-		const total = this.totalLines();
-		const scrollable = total > PANEL_VIEWPORT_HEIGHT;
-		const pos = scrollable
-			? ` · ${Math.min(100, Math.round((this.offset / Math.max(1, total - PANEL_VIEWPORT_HEIGHT)) * 100))}%`
-			: "";
-		const footer = `Ctrl+1/2/3 inject · Alt+N interact${scrollable ? " · Alt+J/K scroll" : ""}${pos}`;
-		lines.push("");
-		lines.push(` ${th ? th.fg("dim", truncateToWidth(footer, inner - 2)) : truncateToWidth(footer, inner - 2)}`);
+		// Footer hints
+		if (st.phase === "done") {
+			const pos = this.scrollable
+				? ` · ${Math.min(100, Math.round((this.offset / Math.max(1, this.totalLines() - CONTENT_HEIGHT)) * 100))}%`
+				: "";
+			const footer = `Ctrl+1/2/3 inject · Alt+N interact${this.scrollable ? " · Alt+J/K scroll" : ""}${pos}`;
+			lines.push("");
+			lines.push(` ${th ? th.fg("dim", truncateToWidth(footer, inner - 2)) : truncateToWidth(footer, inner - 2)}`);
+		}
 
-		const box = drawBox(th, lines, inner, `Native · ${this.modelLabel}`);
-		const leftPad = Math.max(0, width - boxW);
-		return box.map((l) => padLeft(l, leftPad));
+		return drawBox(th, lines, inner, title);
+	}
+}
+
+// ---------------------------------------------------------------------------
+// PanelEditor: wraps the real editor, adding the side panel when active
+// ---------------------------------------------------------------------------
+
+export class PanelEditor extends CustomEditor {
+	constructor(
+		tui: TuiLike & object,
+		theme: ThemeLike & object,
+		keybindings: object,
+		private panel: NativeSidePanel,
+	) {
+		super(tui as never, theme as never, keybindings as never);
+		this.panel.attach(tui, theme);
+	}
+
+	render(width: number): string[] {
+		if (!this.panel.active || width < 70) {
+			// Panel hidden (or terminal too narrow): the untouched default editor.
+			return super.render(width);
+		}
+		const panelW = Math.min(78, Math.max(36, Math.floor(width * 0.55)));
+		const gap = 1;
+		const editorW = width - panelW - gap;
+
+		const edLines = super.render(editorW);
+		const pLines = this.panel.render(panelW);
+		const rows = Math.max(edLines.length, pLines.length);
+		const edOffset = rows - edLines.length; // editor stays at the bottom
+
+		const out: string[] = [];
+		for (let i = 0; i < rows; i++) {
+			const ed = i >= edOffset ? padTo(edLines[i - edOffset] ?? "", editorW) : " ".repeat(editorW);
+			out.push(ed + " ".repeat(gap) + (pLines[i] ?? ""));
+		}
+		return out;
 	}
 }
 
@@ -194,7 +270,6 @@ export interface OverlayChoice {
 	text: string;
 }
 
-const PANEL_VIEWPORT_HEIGHT = 16;
 const VIEWPORT_HEIGHT = 22;
 
 export class NativeOverlay {
@@ -211,7 +286,6 @@ export class NativeOverlay {
 		private modelLabel: string,
 		private done: (choice: OverlayChoice | undefined) => void,
 	) {
-		// Sensible default; render() re-wraps to the real terminal width.
 		this.rebuild(58);
 	}
 
@@ -272,7 +346,6 @@ export class NativeOverlay {
 		} else if (data === "3") {
 			this.choose(2);
 		} else if (matchesKey(data, "tab")) {
-			// Tab / Shift+Tab cycle the selected style.
 			this.selected = (this.selected + (data.includes("\x1b[2") ? STYLE_KEYS.length - 1 : 1)) % STYLE_KEYS.length;
 			this.status = "";
 			this.ensureVisible();
@@ -300,10 +373,8 @@ export class NativeOverlay {
 
 	render(width: number): string[] {
 		const th = this.theme;
-		const boxW = boxWidthFor(width, 78);
+		const boxW = Math.max(30, Math.min(78, width));
 		const inner = boxW - 2;
-
-		// Re-wrap whenever the available width changes (also builds on first render).
 		const wrapAt = Math.max(20, inner - 2);
 		if (wrapAt !== this.wrapWidth) this.rebuild(wrapAt);
 
@@ -330,14 +401,12 @@ export class NativeOverlay {
 
 		const scrollable = this.totalLines() > VIEWPORT_HEIGHT;
 		const position = scrollable ? ` · ${Math.min(100, Math.round((this.offset / Math.max(1, this.totalLines() - VIEWPORT_HEIGHT)) * 100))}%` : "";
-		const footer =
-			this.status ||
-			`Enter/1/2/3 inject${scrollable ? " · ↑↓ scroll" : ""} · Tab select · c copy · Esc close${position}`;
+		const footer = this.status || `Enter/1/2/3 inject${scrollable ? " · ↑↓ scroll" : ""} · Tab select · c copy · Esc close${position}`;
 		lines.push("");
 		lines.push(` ${th ? th.fg("dim", truncateToWidth(footer, inner - 2)) : truncateToWidth(footer, inner - 2)}`);
 
 		const box = drawBox(th, lines, inner, `Native · ${this.modelLabel}`);
 		const leftPad = Math.max(0, width - boxW);
-		return box.map((l) => padLeft(l, leftPad));
+		return box.map((l) => " ".repeat(leftPad) + l);
 	}
 }

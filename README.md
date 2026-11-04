@@ -21,11 +21,12 @@ i am want to check why audio not switch native
 | `Ctrl+1` / `Ctrl+2` / `Ctrl+3` | inject Natural / Technical / Concise into the editor |
 | `Alt+J` / `Alt+K` | scroll the panel down / up (works while typing in the editor) |
 | `Alt+N` | interactive modal: `↑↓` scroll, `Tab` select, `1/2/3`/`Enter` inject, `c` copy, `Esc` back to the editor |
+| `Alt+N` | interactive modal: `↑↓` scroll, `Tab` select, `1/2/3`/`Enter` inject, `c` copy, `Esc` back to the editor |
 
-When a translation completes, a right-aligned panel with the full three-style
-result appears above the editor. It never steals focus — you can transcribe
-from it into the editor while it stays open. Submitting any input dismisses
-it automatically.
+On trigger the panel appears immediately beside the editor — the editor
+re-renders narrower (its text wraps) and the translation streams into the
+panel live. It never steals focus, so you can transcribe from it while typing.
+Submitting any input dismisses it and the editor returns to full width.
 
 Commands: `/native <text>` (manual trigger) · `/native model` (pick model) ·
 `/native clear` (wipe translation memory).
