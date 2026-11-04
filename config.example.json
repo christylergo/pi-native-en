@@ -1,0 +1,8 @@
+{
+	"model": {
+		"source": "registry",
+		"provider": "your-provider",
+		"id": "your-model-id"
+	},
+	"historyLimit": 20
+}
