@@ -1,8 +1,12 @@
 /**
- * UI components for the native-prompt extension:
- *  - NativeWidget: the on-demand right-aligned panel above the editor
- *    (passive display; keyboard shortcuts live in index.ts).
- *  - NativeOverlay: the interactive full-text view (ctx.ui.custom overlay).
+ * UI components for the native-prompt extension.
+ *
+ * - NativePanel: the always-visible, right-aligned panel above the editor.
+ *   Shows the FULL three-style translation, scrolls internally, and never
+ *   takes focus — so the user can transcribe from it into the editor while
+ *   it is open. Scrolling is driven by global shortcuts (Alt+J/Alt+K).
+ * - NativeOverlay: the interactive modal (Alt+N) for selection/copy/inject.
+ *   Closing it returns focus to the editor automatically.
  */
 import { spawn } from "node:child_process";
 import { matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
@@ -22,16 +26,7 @@ function padTo(s: string, len: number): string {
 }
 
 function padLeft(line: string, leftPad: number): string {
-	// Right-align a box line inside the full terminal width.
 	return " ".repeat(leftPad) + line;
-}
-
-export interface PanelState {
-	phase: "loading" | "done" | "error";
-	source?: string;
-	result?: TranslationResult;
-	modelLabel?: string;
-	message?: string;
 }
 
 function boxWidthFor(width: number, max: number): number {
@@ -47,8 +42,7 @@ function drawBox(theme: ThemeLike | null, innerLines: string[], inner: number, t
 		? theme.fg("border", `╭─ ${shown} `) + theme.fg("border", "─".repeat(dashes)) + theme.fg("border", "╮")
 		: `╭─ ${shown} ${"─".repeat(dashes)}╮`;
 	const bottom = theme ? theme.fg("border", `╰${"─".repeat(inner)}╯`) : `╰${"─".repeat(inner)}╯`;
-	// Defensive: never let a long inner line (hints, previews) push the box
-	// wider than its frame on narrow terminals.
+	// Defensive: never let a long inner line push the box wider than its frame.
 	const rows = innerLines.map((l) => (visibleWidth(l) > inner ? truncateToWidth(l, inner) : l));
 	return [top, ...rows.map((l) => c + padTo(l, inner) + c), bottom];
 }
@@ -82,75 +76,117 @@ export async function copyToClipboard(text: string): Promise<boolean> {
 }
 
 // ---------------------------------------------------------------------------
-// Widget (passive, right-aligned, above the editor)
+// Panel: full-content, right-aligned, passively visible above the editor
 // ---------------------------------------------------------------------------
 
-export class NativeWidget {
-	state: PanelState | null = null;
+export class NativePanel {
+	private sourceText = "";
+	private result: TranslationResult | null = null;
+	private modelLabel = "";
+	private offset = 0;
+	private sections: string[][] = [];
+	private wrapWidth = 0;
 	private tui: { requestRender(): void } | null = null;
 	private theme: ThemeLike | null = null;
+
+	get hasContent(): boolean {
+		return this.result !== null;
+	}
 
 	bind(tui: { requestRender(): void }, theme: ThemeLike): void {
 		this.tui = tui;
 		this.theme = theme;
 	}
 
-	update(state: PanelState | null): void {
-		this.state = state;
+	set(source: string, result: TranslationResult, modelLabel: string): void {
+		this.sourceText = source;
+		this.result = result;
+		this.modelLabel = modelLabel;
+		this.offset = 0;
+		this.wrapWidth = 0; // force re-wrap
+		this.refresh();
+	}
+
+	clear(): void {
+		this.result = null;
+		this.tui?.requestRender();
+	}
+
+	/** Scroll by delta lines (global shortcuts call this; editor keeps focus). */
+	scrollBy(delta: number): void {
+		if (!this.result) return;
+		const max = Math.max(0, this.totalLines() - PANEL_VIEWPORT_HEIGHT);
+		this.offset = Math.min(Math.max(0, this.offset + delta), max);
+		this.tui?.requestRender();
+	}
+
+	private totalLines(): number {
+		return this.sections.reduce((n, s) => n + s.length, 0);
+	}
+
+	private rebuild(wrapAt: number): void {
+		this.wrapWidth = wrapAt;
+		const th = this.theme;
+		const r = this.result;
+		if (!r) {
+			this.sections = [];
+			return;
+		}
+		this.sections = STYLE_KEYS.map((key) => {
+			const header = th ? th.fg("accent", STYLE_LABELS[key]) : STYLE_LABELS[key];
+			return [header, ...wrapTextWithAnsi(r[key] ?? "", wrapAt), ""];
+		});
+		const max = Math.max(0, this.totalLines() - PANEL_VIEWPORT_HEIGHT);
+		this.offset = Math.min(this.offset, max);
+	}
+
+	private refresh(): void {
+		this.wrapWidth = 0;
 		this.tui?.requestRender();
 	}
 
 	invalidate(): void {}
 
 	render(width: number): string[] {
-		if (!this.state) return [];
-		const st = this.state;
-		const boxW = boxWidthFor(width, 64);
-		const inner = boxW - 2;
+		if (!this.result) return [];
 		const th = this.theme;
-		const lines: string[] = [];
+		const boxW = boxWidthFor(width, 78);
+		const inner = boxW - 2;
+		const wrapAt = Math.max(20, inner - 2);
+		if (wrapAt !== this.wrapWidth) this.rebuild(wrapAt);
 
-		if (st.phase === "loading") {
-			const head = th ? th.fg("accent", "Translating") + th.fg("dim", ` · ${st.modelLabel ?? ""}`) : `Translating · ${st.modelLabel ?? ""}`;
-			lines.push(` ${head}`);
-			lines.push("");
-			for (const srcLine of (st.source ?? "").split("\n").slice(0, 2)) {
-				lines.push(` ${th ? th.fg("dim", truncateToWidth(srcLine.trim(), inner - 4)) : truncateToWidth(srcLine.trim(), inner - 4)}`);
+		const lines: string[] = [];
+		const src = this.sourceText.replace(/\s+/g, " ").trim();
+		lines.push(` ${th ? th.fg("dim", `◧ ${truncateToWidth(src, inner - 6)}`) : truncateToWidth(src, inner - 2)}`);
+		lines.push("");
+
+		let cursor = 0;
+		for (const section of this.sections) {
+			for (const line of section) {
+				if (cursor >= this.offset && cursor < this.offset + PANEL_VIEWPORT_HEIGHT) {
+					lines.push(` ${line}`);
+				}
+				cursor++;
 			}
-			lines.push("");
-			const hint = th ? th.fg("dim", "Alt+W dismiss · a new trigger cancels") : "Alt+W dismiss · a new trigger cancels";
-			lines.push(` ${hint}`);
-		} else if (st.phase === "done" && st.result) {
-			const src = (st.source ?? "").replace(/\s+/g, " ").trim();
-			const srcLine = th ? th.fg("dim", `◧ ${truncateToWidth(src, inner - 6)}`) : truncateToWidth(src, inner - 2);
-			lines.push(` ${srcLine}`);
-			lines.push("");
-			for (let i = 0; i < STYLE_KEYS.length; i++) {
-				const key = STYLE_KEYS[i]!;
-				const text = (st.result[key] ?? "").replace(/\s+/g, " ").trim();
-				const num = th ? th.fg("accent", `${i + 1} ${STYLE_LABELS[key]}`) : `${i + 1} ${STYLE_LABELS[key]}`;
-				const preview = truncateToWidth(text, Math.max(8, inner - 16));
-				lines.push(` ${padTo(num, 13)}${th ? th.fg("text", preview) : preview}`);
-			}
-			lines.push("");
-			const hint = "Ctrl+1/2/3 inject · Alt+N full · Alt+W close";
-			lines.push(` ${th ? th.fg("dim", hint) : hint}`);
-		} else {
-			const msg = st.message ?? "translation failed";
-			lines.push(` ${th ? th.fg("error", truncateToWidth(msg, inner - 2)) : truncateToWidth(msg, inner - 2)}`);
-			lines.push("");
-			lines.push(` ${th ? th.fg("dim", "Alt+W close · retry by appending 'native' again") : "Alt+W close"}`);
 		}
 
-		const title = st.phase === "error" ? "Native ✗" : "Native";
-		const box = drawBox(th, lines, inner, title);
+		const total = this.totalLines();
+		const scrollable = total > PANEL_VIEWPORT_HEIGHT;
+		const pos = scrollable
+			? ` · ${Math.min(100, Math.round((this.offset / Math.max(1, total - PANEL_VIEWPORT_HEIGHT)) * 100))}%`
+			: "";
+		const footer = `Ctrl+1/2/3 inject · Alt+N interact${scrollable ? " · Alt+J/K scroll" : ""}${pos}`;
+		lines.push("");
+		lines.push(` ${th ? th.fg("dim", truncateToWidth(footer, inner - 2)) : truncateToWidth(footer, inner - 2)}`);
+
+		const box = drawBox(th, lines, inner, `Native · ${this.modelLabel}`);
 		const leftPad = Math.max(0, width - boxW);
 		return box.map((l) => padLeft(l, leftPad));
 	}
 }
 
 // ---------------------------------------------------------------------------
-// Overlay (interactive full-text view)
+// Overlay: interactive modal for selection/copy/inject (Alt+N)
 // ---------------------------------------------------------------------------
 
 export interface OverlayChoice {
@@ -158,7 +194,8 @@ export interface OverlayChoice {
 	text: string;
 }
 
-const OVERLAY_MAX_HEIGHT = 20;
+const PANEL_VIEWPORT_HEIGHT = 16;
+const VIEWPORT_HEIGHT = 22;
 
 export class NativeOverlay {
 	private selected = 0;
@@ -188,7 +225,7 @@ export class NativeOverlay {
 				lines: [` ${header}`, ...wrapTextWithAnsi(this.result[key] ?? "", wrapAt).map((l) => ` ${l}`), ""],
 			};
 		});
-		this.ensureVisible();
+		this.clampOffset();
 	}
 
 	private totalLines(): number {
@@ -201,12 +238,21 @@ export class NativeOverlay {
 		return { start, end: start + this.sections[index]!.lines.length };
 	}
 
+	private clampOffset(): void {
+		const maxOffset = Math.max(0, this.totalLines() - VIEWPORT_HEIGHT);
+		this.offset = Math.min(Math.max(0, this.offset), maxOffset);
+	}
+
 	private ensureVisible(): void {
 		const { start, end } = this.sectionRange(this.selected);
 		if (start < this.offset) this.offset = start;
-		if (end > this.offset + OVERLAY_MAX_HEIGHT) this.offset = end - OVERLAY_MAX_HEIGHT;
-		const maxOffset = Math.max(0, this.totalLines() - OVERLAY_MAX_HEIGHT);
-		this.offset = Math.min(Math.max(0, this.offset), maxOffset);
+		if (end > this.offset + VIEWPORT_HEIGHT) this.offset = end - VIEWPORT_HEIGHT;
+		this.clampOffset();
+	}
+
+	private scroll(delta: number): void {
+		this.status = "";
+		this.offset = Math.min(Math.max(0, this.offset + delta), Math.max(0, this.totalLines() - VIEWPORT_HEIGHT));
 	}
 
 	private choose(index: number): void {
@@ -215,24 +261,33 @@ export class NativeOverlay {
 	}
 
 	handleInput(data: string): void {
-		if (matchesKey(data, "escape")) {
+		if (matchesKey(data, "escape") || data === "q") {
 			this.done(undefined);
 		} else if (matchesKey(data, "return")) {
 			this.choose(this.selected);
-		} else if (matchesKey(data, "up")) {
-			this.selected = (this.selected + STYLE_KEYS.length - 1) % STYLE_KEYS.length;
-			this.status = "";
-			this.ensureVisible();
-		} else if (matchesKey(data, "down")) {
-			this.selected = (this.selected + 1) % STYLE_KEYS.length;
-			this.status = "";
-			this.ensureVisible();
 		} else if (data === "1") {
 			this.choose(0);
 		} else if (data === "2") {
 			this.choose(1);
 		} else if (data === "3") {
 			this.choose(2);
+		} else if (matchesKey(data, "tab")) {
+			// Tab / Shift+Tab cycle the selected style.
+			this.selected = (this.selected + (data.includes("\x1b[2") ? STYLE_KEYS.length - 1 : 1)) % STYLE_KEYS.length;
+			this.status = "";
+			this.ensureVisible();
+		} else if (matchesKey(data, "down")) {
+			this.scroll(1);
+		} else if (matchesKey(data, "up")) {
+			this.scroll(-1);
+		} else if (matchesKey(data, "pageup") || matchesKey(data, "pageUp")) {
+			this.scroll(-VIEWPORT_HEIGHT);
+		} else if (matchesKey(data, "pagedown") || matchesKey(data, "pageDown")) {
+			this.scroll(VIEWPORT_HEIGHT);
+		} else if (matchesKey(data, "home")) {
+			this.scroll(-Infinity);
+		} else if (matchesKey(data, "end")) {
+			this.scroll(Infinity);
 		} else if (data === "c" || data === "C") {
 			const key = STYLE_KEYS[this.selected]!;
 			void copyToClipboard(this.result[key] ?? "").then((ok) => {
@@ -261,7 +316,7 @@ export class NativeOverlay {
 		for (let i = 0; i < this.sections.length; i++) {
 			const section = this.sections[i]!;
 			for (const line of section.lines) {
-				if (cursor >= this.offset && cursor < this.offset + OVERLAY_MAX_HEIGHT) {
+				if (cursor >= this.offset && cursor < this.offset + VIEWPORT_HEIGHT) {
 					if (i === this.selected) {
 						const marker = th ? th.fg("accent", "▍") : "▍";
 						lines.push(`${marker}${line.slice(1)}`);
@@ -273,12 +328,15 @@ export class NativeOverlay {
 			}
 		}
 
-		const more = this.totalLines() > OVERLAY_MAX_HEIGHT ? " · ↑↓ scroll" : "";
-		const footer = this.status || `Enter/1/2/3 inject · c copy${more} · Esc close`;
+		const scrollable = this.totalLines() > VIEWPORT_HEIGHT;
+		const position = scrollable ? ` · ${Math.min(100, Math.round((this.offset / Math.max(1, this.totalLines() - VIEWPORT_HEIGHT)) * 100))}%` : "";
+		const footer =
+			this.status ||
+			`Enter/1/2/3 inject${scrollable ? " · ↑↓ scroll" : ""} · Tab select · c copy · Esc close${position}`;
 		lines.push("");
 		lines.push(` ${th ? th.fg("dim", truncateToWidth(footer, inner - 2)) : truncateToWidth(footer, inner - 2)}`);
 
-		const box = drawBox(th, lines, inner, `Native full · ${this.modelLabel}`);
+		const box = drawBox(th, lines, inner, `Native · ${this.modelLabel}`);
 		const leftPad = Math.max(0, width - boxW);
 		return box.map((l) => padLeft(l, leftPad));
 	}

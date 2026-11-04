@@ -5,8 +5,8 @@ translates prompts into native English without leaving your coding session.
 
 Type any text ending with `native` — Chinese, broken English, or mixed — and a
 right-aligned panel appears with three rewrites: **Natural**, **Technical**,
-and **Concise**. Inject one with a keystroke, or retype it yourself; either way
-the panel dismisses itself and the working session's context stays untouched
+and **Concise**. Inject one with a keystroke, or transcribe it yourself while
+the panel stays open; submitting dismisses it and the working session's context stays untouched
 (translation runs through an independent LLM call with its own history).
 
 ```text
@@ -19,8 +19,13 @@ i am want to check why audio not switch native
 | Key | Action |
 | --- | --- |
 | `Ctrl+1` / `Ctrl+2` / `Ctrl+3` | inject Natural / Technical / Concise into the editor |
-| `Alt+N` | open the full-text overlay (`c` copies, `↑↓` select, `Esc` back) |
-| `Alt+W` | dismiss the panel |
+| `Alt+J` / `Alt+K` | scroll the panel down / up (works while typing in the editor) |
+| `Alt+N` | interactive modal: `↑↓` scroll, `Tab` select, `1/2/3`/`Enter` inject, `c` copy, `Esc` back to the editor |
+
+When a translation completes, a right-aligned panel with the full three-style
+result appears above the editor. It never steals focus — you can transcribe
+from it into the editor while it stays open. Submitting any input dismisses
+it automatically.
 
 Commands: `/native <text>` (manual trigger) · `/native model` (pick model) ·
 `/native clear` (wipe translation memory).
