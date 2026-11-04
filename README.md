@@ -28,7 +28,8 @@ i am want to check why audio not switch native
 
 On trigger a centered, content-adaptive panel appears immediately above the
 editor (never covering the input bar) and the translation streams into it
-live. It never takes focus — every interaction is a global shortcut that
+live — including the model's reasoning chain while it thinks, so the panel
+never looks stuck. It never takes focus; every interaction is a global shortcut that
 works while typing. Submitting any input dismisses it.
 
 Commands: `/native <text>` (manual trigger) · `/native model` (pick model) ·

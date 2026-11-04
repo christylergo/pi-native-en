@@ -88,7 +88,7 @@ const CONTENT_HEIGHT = 18;
 
 type PanelState =
 	| { phase: "loading"; source: string; modelLabel: string }
-	| { phase: "streaming"; source: string; modelLabel: string; partial: string }
+	| { phase: "streaming"; source: string; modelLabel: string; partial: string; thinking: string }
 	| { phase: "done"; source: string; result: TranslationResult; modelLabel: string }
 	| { phase: "error"; message: string };
 
@@ -132,9 +132,9 @@ export class NativePanel {
 		this.requestRender();
 	}
 
-	showStreaming(source: string, modelLabel: string, partial: string): void {
+	showStreaming(source: string, modelLabel: string, partial: string, thinking = ""): void {
 		if (this.state?.phase === "done" || this.state?.phase === "error") return;
-		this.state = { phase: "streaming", source, modelLabel, partial };
+		this.state = { phase: "streaming", source, modelLabel, partial, thinking };
 		this.requestRender();
 	}
 
@@ -251,9 +251,22 @@ export class NativePanel {
 			lines.push("");
 			lines.push(` ${th ? th.fg("dim", "The translation will stream in here.") : ""}`);
 		} else if (st.phase === "streaming") {
+			// Show the reasoning chain while the model thinks, then the answer as
+			// it is written — the panel always moves, so it never looks stuck.
 			title = `Native · translating… ${st.partial.length}c`;
-			const wrapped = wrapTextWithAnsi(st.partial || "…", inner - 2);
-			for (const l of wrapped.slice(-CONTENT_HEIGHT)) lines.push(` ${l}`);
+			if (st.partial.length === 0 && st.thinking.length > 0) {
+				lines.push(` ${th ? th.fg("dim", "🧠 thinking…") : "thinking…"}`);
+				lines.push("");
+				const wrapped = wrapTextWithAnsi(st.thinking, inner - 2);
+				for (const l of wrapped.slice(-CONTENT_HEIGHT)) lines.push(` ${th ? th.fg("muted", l) : l}`);
+			} else {
+				if (st.thinking.length > 0) {
+					lines.push(` ${th ? th.fg("dim", `🧠 ${st.thinking.length}c of reasoning done`) : `${st.thinking.length}c of reasoning done`}`);
+					lines.push("");
+				}
+				const wrapped = wrapTextWithAnsi(st.partial || "…", inner - 2);
+				for (const l of wrapped.slice(-CONTENT_HEIGHT)) lines.push(` ${l}`);
+			}
 			lines.push("");
 			lines.push(` ${th ? th.fg("dim", "streaming — a new trigger cancels") : ""}`);
 		} else if (st.phase === "done") {

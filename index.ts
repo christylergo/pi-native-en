@@ -153,8 +153,8 @@ export default async function main(pi: ExtensionAPI): Promise<void> {
 			setStatus(ctx, `Translating · ${describeModel(config)}…`);
 		}
 		try {
-			const out = await translate(ctx, config, source, abort.signal, (partial) => {
-				panel.showStreaming(source, describeModel(config), partial);
+			const out = await translate(ctx, config, source, abort.signal, (partial, thinking) => {
+				panel.showStreaming(source, describeModel(config), partial, thinking);
 			});
 			if (inFlight !== abort) return; // superseded by a newer trigger
 			last = { source, result: out.result, modelLabel: out.modelLabel };

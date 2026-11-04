@@ -279,6 +279,13 @@ function extractText(response: unknown): string {
 		.join("\n");
 }
 
+function extractThinking(response: unknown): string {
+	return ((response as { content?: Array<{ type: string; thinking?: string }> }).content ?? [])
+		.filter((c) => c.type === "thinking" && typeof c.thinking === "string")
+		.map((c) => c.thinking as string)
+		.join("");
+}
+
 function isComplete(result: TranslationResult): boolean {
 	return Boolean(result.natural && result.technical && result.concise);
 }
@@ -308,27 +315,44 @@ export async function translate(
 		return extractText(response);
 	};
 
-	// First attempt streams, so the panel can show the translation as it is
-	// produced. Falls back to complete() when streaming is unavailable.
+	// First attempt streams, so the panel can show the translation (and the
+	// model's reasoning chain) as it is produced. Falls back to complete()
+	// when streaming is unavailable.
 	const streamOnce = async (msgs: ChatMessage[]): Promise<string> => {
 		const registry = ctx.modelRegistry as unknown as {
 			streamSimple?: (m: unknown, context: unknown, options: unknown) => AsyncIterable<unknown> & { result(): Promise<unknown> };
 		};
 		if (typeof registry.streamSimple !== "function" || !onUpdate) return complete(msgs);
 		let partial = "";
+		let thinking = "";
+		const push = () => onUpdate(partial, thinking);
 		try {
 			const stream = registry.streamSimple(model, { messages: msgs }, { maxTokens: 4096, signal });
 			for await (const ev of stream) {
-				const e = ev as { type?: string; text?: string; message?: unknown };
-				if (typeof e.text === "string" && (e.type === "text_delta" || e.type === "text" || e.type?.endsWith("_delta"))) {
-					partial += e.text;
-				onUpdate(partial);
-			} else if (e.type === "message_update" && e.message) {
-				const t = extractText(e.message);
-				if (t) {
-					partial = t;
-					onUpdate(partial);
-				}
+				const e = ev as { type?: string; text?: string; thinking?: string; delta?: string; message?: unknown };
+				if (e.type === "text_delta" || e.type === "text") {
+					const chunk = typeof e.delta === "string" ? e.delta : typeof e.text === "string" ? e.text : "";
+					if (chunk) {
+						partial += chunk;
+						push();
+					}
+				} else if (e.type === "thinking_delta" || e.type === "thinking" || (e.type ?? "").includes("think")) {
+					const chunk = typeof e.delta === "string" ? e.delta : typeof e.thinking === "string" ? e.thinking : "";
+					if (chunk) {
+						thinking += chunk;
+						push();
+					}
+				} else if (e.type === "message_update" && e.message) {
+					const t = extractText(e.message);
+					const th = extractThinking(e.message);
+					if (t && t !== partial) {
+						partial = t;
+						push();
+					}
+					if (th && th.length > thinking.length) {
+						thinking = th;
+						push();
+					}
 				}
 			}
 			const finalMessage = await stream.result();
