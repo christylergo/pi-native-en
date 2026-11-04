@@ -20,9 +20,9 @@ i am want to check why audio not switch native
 | --- | --- |
 | `Alt+1` / `Alt+2` / `Alt+3` | inject Natural / Technical / Concise into the editor |
 | `Alt+I` | inject the currently selected style (`▍` marks it) |
-| `Alt+H` / `Alt+L` | select previous / next style |
+| `Alt+N` / `Alt+P` | select next / previous style (neovim next/prev) |
 | `Alt+C` | copy the selected style to the clipboard |
-| `Alt+J` / `Alt+K` | scroll the panel down / up |
+| `Alt+J` / `Alt+K` | scroll the panel down / up (vim line motion) |
 | `Alt+W` | close the panel |
 | `Alt+N` | interactive modal: `↑↓` scroll, `Tab` select, `1/2/3`/`Enter` inject, `c` copy, `Esc` back to the editor |
 

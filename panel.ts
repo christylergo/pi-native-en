@@ -306,7 +306,7 @@ export class NativePanel {
 			const scrollable = total > CONTENT_HEIGHT;
 			const pos = scrollable ? ` · ${Math.min(100, Math.round((this.offset / Math.max(1, total - CONTENT_HEIGHT)) * 100))}%` : "";
 			const sel = STYLE_LABELS[STYLE_KEYS[this.selected]!];
-			const footer = `▸${sel}  Alt+1/2/3 or Alt+I inject · Alt+H/L select · Alt+C copy${scrollable ? " · Alt+J/K scroll" : ""} · Alt+W close${pos}`;
+			const footer = `▸${sel}  Alt+1/2/3 or Alt+I inject · Alt+N/P select · Alt+C copy${scrollable ? " · Alt+J/K scroll" : ""} · Alt+W close${pos}`;
 			lines.push("");
 			lines.push(` ${th ? th.fg("dim", truncateToWidth(footer, inner - 2)) : truncateToWidth(footer, inner - 2)}`);
 		}

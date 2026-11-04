@@ -12,9 +12,8 @@
  *
  *   Alt+1 / Alt+2 / Alt+3     inject Natural / Technical / Concise
  *   Alt+I                      inject the currently selected style
- *   Alt+H / Alt+L              select previous / next style (▍ marks it)
+ *   Alt+J / Alt+K              select next / previous style (▍ marks it)
  *   Alt+C                      copy the selected style to the clipboard
- *   Alt+J / Alt+K              scroll the panel down / up
  *   Alt+W                      close the panel
  *
  * Focus model: the panel NEVER takes focus — the editor is always focused.
@@ -298,13 +297,13 @@ export default async function main(pi: ExtensionAPI): Promise<void> {
 			else ctx.ui.notify("native-prompt: no translation yet", "warning");
 		},
 	});
-	pi.registerShortcut("alt+h", {
-		description: "native-prompt: select previous translation style",
-		handler: () => panel.selectBy(-1),
-	});
-	pi.registerShortcut("alt+l", {
+	pi.registerShortcut("alt+n", {
 		description: "native-prompt: select next translation style",
 		handler: () => panel.selectBy(1),
+	});
+	pi.registerShortcut("alt+p", {
+		description: "native-prompt: select previous translation style",
+		handler: () => panel.selectBy(-1),
 	});
 	pi.registerShortcut("alt+c", {
 		description: "native-prompt: copy the selected translation",
