@@ -3,7 +3,7 @@
 A [pi](https://github.com/nicobailon/code-with-the-flow) extension that
 translates prompts into native English without leaving your coding session.
 
-Type any text ending with `native` — Chinese, broken English, or mixed — and a
+Type any text ending with `native` or `美式` — Chinese, broken English, or mixed — and a
 right-aligned panel appears with three rewrites: **Natural**, **Technical**,
 and **Concise**. Inject one with a keystroke, or transcribe it yourself while
 the panel stays open; submitting dismisses it and the working session's context stays untouched
